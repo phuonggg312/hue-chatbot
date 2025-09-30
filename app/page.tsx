@@ -1,103 +1,135 @@
-import Image from "next/image";
+'use client'
+
+import { useState, useEffect, FormEvent } from 'react'
+import { createClientComponentClient, User } from '@supabase/auth-helpers-nextjs'
+import { useRouter } from 'next/navigation'
+import Link from 'next/link'
+import Sidebar from '../components/Sidebar' // Import component Sidebar
+
+// Định nghĩa các kiểu dữ liệu
+type Conversation = {
+  id: string;
+  title: string;
+}
 
 export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const [user, setUser] = useState<User | null>(null)
+  const [conversations, setConversations] = useState<Conversation[]>([])
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
+  const router = useRouter()
+  const supabase = createClientComponentClient()
+
+  // Hook này sẽ chạy khi trang được tải để kiểm tra và lấy dữ liệu
+  useEffect(() => {
+    const getUserAndConversations = async () => {
+      const { data: { session } } = await supabase.auth.getSession()
+      setUser(session?.user ?? null)
+
+      if (session?.user) {
+        // Tải lịch sử chat từ Supabase
+        const { data, error } = await supabase
+          .from('conversations')
+          .select('id, title')
+          .order('created_at', { ascending: false });
+
+        if (error) {
+          console.error("Lỗi khi tải lịch sử chat:", error);
+        } else if (data) {
+          setConversations(data);
+        }
+      }
+    }
+    getUserAndConversations()
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      setUser(session?.user ?? null)
+      if (event === 'SIGNED_OUT') {
+        setConversations([])
+        router.refresh();
+      } else if (event === 'SIGNED_IN') {
+        router.refresh();
+      }
+    })
+
+    return () => {
+      authListener.subscription.unsubscribe()
+    }
+  }, [supabase, router])
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut()
+  }
+
+  const handleNewConversation = () => {
+    // Logic để tạo cuộc trò chuyện mới sẽ được thêm vào đây
+    alert("Chức năng tạo cuộc trò chuyện mới!");
+  }
+
+  const handleSelectConversation = (id: string) => {
+    // Logic để chọn và tải một cuộc trò chuyện cũ sẽ được thêm vào đây
+    alert(`Bạn đã chọn cuộc trò chuyện có ID: ${id}`);
+  }
+
+  return (
+    <div className="w-full h-screen bg-white flex overflow-hidden">
+      {/* Hiển thị Sidebar nếu người dùng đã đăng nhập */}
+      {user && (
+        <Sidebar 
+          user={user}
+          conversations={conversations}
+          onNewConversation={handleNewConversation}
+          onSelectConversation={handleSelectConversation}
+          activeConversationId={null} // Tạm thời để null
+          onSignOut={handleSignOut}
+        />
+      )}
+
+      {/* Cửa sổ Chat chính */}
+      <div className="flex-1 flex flex-col relative">
+        <header className="p-4 border-b flex justify-between items-center bg-white flex-shrink-0">
+          <h1 className="text-xl font-bold">Trợ lý ảo HUE</h1>
+        </header>
+        
+        <main className="flex-grow p-6 overflow-y-auto">
+          {/* Các tin nhắn sẽ được hiển thị ở đây */}
+          <p className="text-gray-500">Bắt đầu cuộc trò chuyện của bạn...</p>
+        </main>
+        
+        {/* Lớp phủ yêu cầu đăng nhập */}
+        {!user && (
+          <div className="absolute inset-0 bg-white bg-opacity-80 backdrop-blur-sm z-10 flex flex-col justify-center items-center text-center p-4">
+            <img src="https://placehold.co/150x50/003366/ffffff?text=LOGO+HUE" alt="Logo HUE" className="mb-6" />
+            <h2 className="text-2xl font-bold text-gray-800">Chào mừng đến với Trợ lý ảo HUE</h2>
+            <p className="text-gray-600 mt-2 mb-6">Vui lòng đăng nhập để bắt đầu cuộc trò chuyện và lưu lại lịch sử.</p>
+            <Link 
+              href="/login"
+              className="px-6 py-3 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 transition-transform transform hover:scale-105"
+            >
+              Đăng nhập / Đăng ký
+            </Link>
+          </div>
+        )}
+
+        {/* Ô nhập liệu */}
+        <footer className="p-4 bg-white border-t border-gray-200 flex-shrink-0">
+          <div className="relative">
+            <input 
+              type="text" 
+              placeholder={user ? "Nhập câu hỏi của bạn..." : "Vui lòng đăng nhập để bắt đầu"}
+              disabled={!user}
+              className="w-full py-3 pl-4 pr-16 rounded-full border-gray-300 focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100"
             />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+            <button 
+              type="submit" 
+              disabled={!user}
+              className="absolute right-4 top-1/2 -translate-y-1/2 bg-blue-600 text-white p-2 rounded-full hover:bg-blue-700 disabled:bg-gray-400"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 2L11 13"/><path d="M22 2L15 22L11 13L2 9L22 2z"/></svg>
+            </button>
+          </div>
+        </footer>
+      </div>
     </div>
-  );
+  )
 }
+
