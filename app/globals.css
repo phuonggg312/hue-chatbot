@@ -1,4 +1,11 @@
-@import "tailwindcss";
+/* @import "tailwindcss"; */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* optional: chỉnh typography mặc định */
+.prose { max-width: 65ch; }
+
 
 :root {
   --background: #ffffff;
