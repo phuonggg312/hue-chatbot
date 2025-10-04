@@ -36,12 +36,17 @@ export default function Home() {
   const [inputValue, setInputValue] = useState('');
   const [isBotReplying, setIsBotReplying] = useState(false);
 
+  // “full text” từ server dùng để gõ từ từ ở UI
+  const [pendingAssistantText, setPendingAssistantText] = useState<string | null>(null);
+  // lưu tạm id message assistant placeholder để cập nhật khi stream xong
+  const [tempAssistantId, setTempAssistantId] = useState<string | null>(null);
+
   // Conversations
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
   const [loadingConversations, setLoadingConversations] = useState(false);
 
-  // ===== Helpers to call API =====
+  // ===== Helpers (API) =====
   const loadConversations = useCallback(async () => {
     try {
       setLoadingConversations(true);
@@ -63,11 +68,11 @@ export default function Home() {
     try {
       const res = await fetch(`/api/messages/${conversationId}`, { method: 'GET' });
       if (!res.ok) throw new Error('Failed to load messages');
-  
+
       const data: {
         messages: Array<{ id: string; role: 'user' | 'assistant' | 'system'; text: string }>
       } = await res.json();
-  
+
       const mapped: Message[] = (data.messages || []).map((m) => ({
         id: m.id,
         text: m.text,
@@ -76,11 +81,9 @@ export default function Home() {
       setMessages(mapped);
     } catch (e) {
       console.error('Load messages error:', e);
-      setMessages([]);
+      setMessages([]); // clear nếu lỗi
     }
   }, []);
-  
-
 
   const createConversation = useCallback(async (title: string) => {
     try {
@@ -109,12 +112,11 @@ export default function Home() {
         body: JSON.stringify({ role, text }),
       });
       if (!res.ok) return undefined;
-      const out = await res.json(); // { id }
-      return out?.id as string | undefined;
+      const out = await res.json(); // { id } hoặc { message:{id,...}}
+      return (out?.id || out?.message?.id) as string | undefined;
     },
     []
   );
-  
 
   // ===== Auth bootstrap =====
   useEffect(() => {
@@ -127,7 +129,6 @@ export default function Home() {
         setShowAuthModal(false);
         const convs = await loadConversations();
 
-        // Khôi phục convId đã lưu (nếu còn tồn tại)
         const saved = localStorage.getItem(LS_KEY);
         if (saved && convs.find((c) => c.id === saved)) {
           setActiveConversationId(saved);
@@ -153,7 +154,9 @@ export default function Home() {
     });
 
     (async () => {
-      const { data: { session } } = await supabase.auth.getSession();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
       setSession(session);
       setLoading(false);
 
@@ -181,11 +184,11 @@ export default function Home() {
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputValue.trim() || isBotReplying) return;
-  
+
     const currentInput = inputValue;
     setInputValue('');
     setIsBotReplying(true);
-  
+
     try {
       // đảm bảo có conversationId nếu đã đăng nhập
       let convId = activeConversationId;
@@ -198,46 +201,90 @@ export default function Home() {
           localStorage.setItem(LS_KEY, convId);
         }
       }
-  
+
       /* ============ USER message ============ */
       let userMsgId: string | undefined = undefined;
-  
       if (session && convId) {
-        // lưu DB và nhận lại id
         userMsgId = await appendMessageToDB(convId, 'user', currentInput);
       }
-  
-      // render user (khách thì id = undefined)
-      setMessages(prev => [
-        ...prev,
-        { id: userMsgId, text: currentInput, sender: 'user' },
-      ]);
-  
+      setMessages((prev) => [...prev, { id: userMsgId, text: currentInput, sender: 'user' }]);
+
+      // Nếu tiêu đề còn placeholder, đổi theo snippet tin đầu
+      if (session && convId) {
+        const conv = conversations.find((c) => c.id === convId);
+        const firstTitle = (currentInput || '').slice(0, 50).trim();
+        if (conv && (!conv.title || conv.title === 'Cuộc trò chuyện mới') && firstTitle) {
+          await fetch('/api/conversations', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: convId, title: firstTitle }),
+          });
+          setConversations((prev) =>
+            prev.map((c) => (c.id === convId ? { ...c, title: firstTitle } : c))
+          );
+        }
+      }
+
+      /* ============ Thêm BOT placeholder để “gõ dần” ============ */
+      const tempId = `temp-${Date.now()}`;
+      setTempAssistantId(tempId);
+      setMessages((prev) => [...prev, { id: tempId, text: '', sender: 'bot' }]);
+
       /* ============ Gọi AI ============ */
       const botText = await getAIResponse(currentInput);
-  
-      /* ============ BOT message ============ */
+
+      /* ============ Lưu BOT message vào DB (nếu có) ============ */
       let botMsgId: string | undefined = undefined;
-  
       if (session && convId) {
         botMsgId = await appendMessageToDB(convId, 'bot', botText);
+        // cập nhật id của placeholder (tuỳ chọn)
+        if (botMsgId) {
+          setMessages((prev) => {
+            const cp = [...prev];
+            const lastBotIdx = cp.map(m => m.sender).lastIndexOf('bot');
+            if (lastBotIdx >= 0 && cp[lastBotIdx]?.id === tempId) {
+              cp[lastBotIdx] = { ...cp[lastBotIdx], id: botMsgId };
+            }
+            return cp;
+          });
+        }
       }
-  
-      setMessages(prev => [
-        ...prev,
-        { id: botMsgId, text: botText, sender: 'bot' },
-      ]);
+
+      // Đưa full text cho ChatMessages để “gõ từ từ”
+      setPendingAssistantText(botText);
     } catch (err) {
       console.error(err);
-      setMessages(prev => [
+      // hiển thị lỗi luôn (không stream)
+      setMessages((prev) => [
         ...prev,
         { text: 'Xin lỗi, có lỗi xảy ra. Vui lòng thử lại.', sender: 'bot' },
       ]);
-    } finally {
       setIsBotReplying(false);
+      setPendingAssistantText(null);
+      setTempAssistantId(null);
     }
   };
-  
+
+  // Khi ChatMessages báo “gõ xong” hoặc người dùng bấm Stop:
+  const handleStreamDone = () => {
+    if (!pendingAssistantText) {
+      setIsBotReplying(false);
+      setTempAssistantId(null);
+      return;
+    }
+    // chốt lại nội dung cho message bot placeholder
+    setMessages((prev) => {
+      const cp = [...prev];
+      const lastBotIdx = cp.map(m => m.sender).lastIndexOf('bot');
+      if (lastBotIdx >= 0) {
+        cp[lastBotIdx] = { ...cp[lastBotIdx], text: pendingAssistantText };
+      }
+      return cp;
+    });
+    setIsBotReplying(false);
+    setPendingAssistantText(null);
+    setTempAssistantId(null);
+  };
 
   const handleShowLogin = () => {
     setAuthMode('login');
@@ -274,57 +321,71 @@ export default function Home() {
 
   return (
     <main className="flex h-screen bg-white">
-      {session && <Sidebar session={session} />}
-
-      <div className="flex-1 flex flex-col h-screen">
-        {/* Header nhỏ hiển thị thông tin hội thoại */}
-        {session && (
-          <div className="px-4 py-2 border-b bg-white">
-            <div className="max-w-3xl mx-auto flex items-center justify-between">
-              <div className="text-sm text-gray-600">
-                {loadingConversations
-                  ? 'Đang tải cuộc trò chuyện...'
-                  : activeConversationId
-                    ? `Cuộc trò chuyện: ${conversations.find((c) => c.id === activeConversationId)?.title || 'Không tiêu đề'
-                    }`
-                    : 'Chưa chọn cuộc trò chuyện'}
-              </div>
-              <button
-                onClick={async () => {
-                  if (!session) {
-                    // khách: chỉ reset UI
-                    setActiveConversationId(null);
-                    localStorage.removeItem(LS_KEY);
-                    setMessages([]);
-                    return;
-                  }
-                  const conv = await createConversation('Cuộc trò chuyện mới');
-                  if (conv) {
-                    setMessages([]);
-                    await loadMessages(conv.id);
-                  }
-                }}
-                className="text-sm px-3 py-1.5 rounded-md bg-gray-800 text-white hover:bg-gray-700"
-              >
-                Cuộc trò chuyện mới
-              </button>
-            </div>
-          </div>
-        )}
-
-        <ChatMessages
-          messages={messages}
-          onSuggestionClick={(q) => setInputValue(q)}   // click gợi ý -> đổ vào input
-          onFeedback={async (id, value) => {
-            // TODO: nếu CHƯA làm API lưu feedback thì có thể tạm thời bỏ qua khối này
-            await fetch(`/api/messages/${id}/feedback`, {
-              method: 'POST',
+      {/* Sidebar chỉ hiển thị khi đã đăng nhập */}
+      {session && (
+        <Sidebar
+          session={session}
+          conversations={conversations}
+          activeId={activeConversationId}
+          onSelect={async (id) => {
+            setActiveConversationId(id);
+            // reset stream khi đổi hội thoại
+            setPendingAssistantText(null);
+            setTempAssistantId(null);
+            setIsBotReplying(false);
+            await loadMessages(id);
+          }}
+          onNew={async () => {
+            const conv = await createConversation('Cuộc trò chuyện mới');
+            if (conv) {
+              setActiveConversationId(conv.id);
+              setMessages([]);
+              setPendingAssistantText(null);
+              setTempAssistantId(null);
+              setIsBotReplying(false);
+              await loadMessages(conv.id);
+            }
+          }}
+          onRename={async (id, newTitle) => {
+            await fetch('/api/conversations', {
+              method: 'PUT',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ value }), // 'like' | 'dislike'
+              body: JSON.stringify({ id, title: newTitle }),
             });
+            setConversations((prev) =>
+              prev.map((c) => (c.id === id ? { ...c, title: newTitle } : c))
+            );
+          }}
+          onDelete={async (id) => {
+            await fetch(`/api/conversations/${id}`, { method: 'DELETE' });
+            setConversations((prev) => prev.filter((c) => c.id !== id));
+            if (activeConversationId === id) {
+              setActiveConversationId(null);
+              setMessages([]);
+              setPendingAssistantText(null);
+              setTempAssistantId(null);
+              setIsBotReplying(false);
+            }
           }}
         />
+      )}
 
+      <div className="flex-1 flex flex-col h-screen">
+        {/* KHÔNG còn header hiển thị dòng “Cuộc trò chuyện: …” */}
+        <ChatMessages
+          messages={messages}
+          onSuggestionClick={(q) => setInputValue(q)}
+          onFeedback={async (id, value) => {
+            if (!id) return;
+            await fetch(`/api/message-feedback/${id}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ reaction: value }), // 'like' | 'dislike'
+            });
+          }}
+          pendingAssistantText={pendingAssistantText}
+          onStreamDone={handleStreamDone}
+        />
 
         <div className="p-4 bg-white border-t border-gray-200">
           <form onSubmit={handleSendMessage} className="relative max-w-3xl mx-auto">
@@ -349,7 +410,7 @@ export default function Home() {
 
       {showAuthModal && (
         <AuthModal
-          mode={authMode}   // ✅ Truyền đúng 'login' | 'signup'
+          mode={authMode} // 'login' | 'signup'
           onClose={() => setShowAuthModal(false)}
           onSuccess={handleAuthSuccess}
         />
